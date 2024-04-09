@@ -1,5 +1,6 @@
 import base64
 import os
+from os.path import join, dirname
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
@@ -10,7 +11,11 @@ import ffmpeg
 import sidemenu as side
 
 
-load_dotenv()  # 環境変数を読み込む
+load_dotenv(verbose=True)
+
+dotenv_path = join(dirname(__file__), '.env')
+load_dotenv(dotenv_path)
+
 # 環境変数からAPIキーを読み込む
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
@@ -28,7 +33,7 @@ def clear():
     st.session_state.shoq_hightlight_button=False
     st.session_state.show_submmit_form = False
     st.session_state.data = pd.DataFrame()
-
+    
 # ダウンロードリンクの生成
 def create_download_link(file_path, download_name):
     with open(file_path, "rb") as f:
