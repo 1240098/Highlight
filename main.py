@@ -1,14 +1,21 @@
 import base64
 import os
+from os.path import join, dirname
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import tempfile
 import ffmpeg
+import datetime
+from pydub import AudioSegment
+from pydub.silence import split_on_silence
+import shutil
 
 import sidemenu as side
 
+# minutes
+split_size = 10
 
 load_dotenv()  # 環境変数を読み込む
 # 環境変数からAPIキーを読み込む
@@ -50,7 +57,51 @@ def cliping(start: float, end: float):
 
     # Streamlitにダウンロードリンクを表示
     st.markdown(create_download_link(out_filename, "download.mp4"), unsafe_allow_html=True)
-    
+
+def split_audio_file(file_path, segment_length, temp_dir):
+    """
+    音声ファイルを指定された長さで分割する。
+
+    :param file_path: 分割するファイルのパス
+    :param segment_length: 分割するセグメントの長さ（秒）
+    :param temp_dir: 一時ディレクトリのパス
+    :return: 分割されたファイルのパスのリスト
+    """
+
+    # 音声ファイルを読み込む
+    audio = AudioSegment.from_file(file_path, format="mp4")
+
+    # 分割するセグメントの長さをミリ秒に変換
+    segment_length_ms = segment_length * 1000
+
+    # 分割されたファイルのパスを格納するリスト
+    split_files = []
+
+    for i in range(0, len(audio), segment_length_ms):
+        # 音声のセグメントを取得
+        segment = audio[i:i + segment_length_ms]
+
+        # 分割されたファイルのパスを生成
+        segment_file_path = f"{temp_dir}/segment_{i // segment_length_ms}.mp4"
+
+        # セグメントをファイルとして保存
+        segment.export(segment_file_path, "mp4")
+
+        # パスをリストに追加
+        split_files.append(segment_file_path)
+
+    return split_files
+
+
+def wisper_transcript(file):
+    with open(file, 'rb') as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json"
+        )
+    return transcript
+
 def main():
     init_page()
     type = side.selectType()
@@ -59,31 +110,40 @@ def main():
         "音声ファイルをアップロードしてください", type=["m4a", "mp3", "webm", "mp4", "mpga", "wav"]
     )
     st.session_state_audio=audio_file
-
+    
     if audio_file is not None:
         # st.audio(audio_file, format="audio/wav")
         st.video(audio_file)
-        
         # 動画から文字起こしする
         # TODO でかいファイルには対応していないのでチャンク？する必要がある
         if st.button("音声文字起こしを実行する"):
             with st.spinner("音声文字起こしを実行中です..."):
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, response_format="verbose_json"
-                )
+                # タイムスタンプ付きの一時ディレクトリを作成
+                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                temp_dir = f'./{timestamp}_temp'
+                os.makedirs(temp_dir, exist_ok=True)
+                st.session_state.temp_dir = temp_dir
+                # 分割の実行
+                split_files = split_audio_file(audio_file, split_size * 60, st.session_state.temp_dir)  # 10分刻みに分割
+                transcripts = [wisper_transcript(file) for file in split_files]
+                # 一時ディレクトリの削除
+                shutil.rmtree(st.session_state.temp_dir)
+                
             st.success("音声文字起こしが完了しました！")
-            
-            filtered_data = [
-                {
-                'start': str(item['start']),  # timedeltaを秒数の文字列に変換します。
-                'end': str(item['end']),  # timedeltaを秒数の文字列に変換します。
-                'content': item['text']
-                }
-                for item in transcript.segments
-            ]
+            filtered_data = []
+            for i ,transcript in enumerate(transcripts):
+                filtered_data.extend([
+                        {
+                        'start': str(item['start']+(i * split_size * 60)),  # timedeltaを秒数の文字列に変換します。
+                        'end': str(item['end']+(i * split_size * 60)),  # timedeltaを秒数の文字列に変換します。
+                        'content': item['text']
+                        }
+                        for item in transcript.segments
+                ])
         
             st.session_state.whisper_data = filtered_data
             st.session_state.shoq_hightlight_button = True
+            st.dataframe(pd.DataFrame(filtered_data))
 
         # 文字起こしされた字幕をハイライト分析
         if st.session_state.shoq_hightlight_button: 
