@@ -7,9 +7,16 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import tempfile
 import ffmpeg
+import datetime
+from pydub import AudioSegment
+from pydub.silence import split_on_silence
+import shutil
+import tqdm
 
 import sidemenu as side
 
+# minutes
+split_size = 10
 
 load_dotenv(verbose=True)
 
@@ -55,7 +62,51 @@ def cliping(start: float, end: float):
 
     # Streamlitにダウンロードリンクを表示
     st.markdown(create_download_link(out_filename, "download.mp4"), unsafe_allow_html=True)
-    
+
+def split_audio_file(file_path, segment_length, temp_dir):
+    """
+    音声ファイルを指定された長さで分割する。
+
+    :param file_path: 分割するファイルのパス
+    :param segment_length: 分割するセグメントの長さ（秒）
+    :param temp_dir: 一時ディレクトリのパス
+    :return: 分割されたファイルのパスのリスト
+    """
+
+    # 音声ファイルを読み込む
+    audio = AudioSegment.from_file(file_path, format="mp4")
+
+    # 分割するセグメントの長さをミリ秒に変換
+    segment_length_ms = segment_length * 1000
+
+    # 分割されたファイルのパスを格納するリスト
+    split_files = []
+
+    for i in range(0, len(audio), segment_length_ms):
+        # 音声のセグメントを取得
+        segment = audio[i:i + segment_length_ms]
+
+        # 分割されたファイルのパスを生成
+        segment_file_path = f"{temp_dir}/segment_{i // segment_length_ms}.mp4"
+
+        # セグメントをファイルとして保存
+        segment.export(segment_file_path, "mp4")
+
+        # パスをリストに追加
+        split_files.append(segment_file_path)
+
+    return split_files
+
+
+def wisper_transcript(file):
+    with open(file, 'rb') as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json"
+        )
+    return transcript
+
 def main():
     init_page()
     type = side.selectType()
@@ -64,31 +115,40 @@ def main():
         "音声ファイルをアップロードしてください", type=["m4a", "mp3", "webm", "mp4", "mpga", "wav"]
     )
     st.session_state_audio=audio_file
-
+    
     if audio_file is not None:
         # st.audio(audio_file, format="audio/wav")
         st.video(audio_file)
-        
         # 動画から文字起こしする
         # TODO でかいファイルには対応していないのでチャンク？する必要がある
         if st.button("音声文字起こしを実行する"):
             with st.spinner("音声文字起こしを実行中です..."):
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, response_format="verbose_json"
-                )
+                # タイムスタンプ付きの一時ディレクトリを作成
+                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                temp_dir = f'./{timestamp}_temp'
+                os.makedirs(temp_dir, exist_ok=True)
+                st.session_state.temp_dir = temp_dir
+                # 分割の実行
+                split_files = split_audio_file(audio_file, split_size * 60, st.session_state.temp_dir)  # 10分刻みに分割
+                transcripts = [wisper_transcript(file) for file in split_files]
+                # 一時ディレクトリの削除
+                shutil.rmtree(st.session_state.temp_dir)
+                
             st.success("音声文字起こしが完了しました！")
-            
-            filtered_data = [
-                {
-                'start': str(item['start']),  # timedeltaを秒数の文字列に変換します。
-                'end': str(item['end']),  # timedeltaを秒数の文字列に変換します。
-                'content': item['text']
-                }
-                for item in transcript.segments
-            ]
+            filtered_data = []
+            for i ,transcript in enumerate(transcripts):
+                filtered_data.extend([
+                        {
+                        'start': str(item['start']+(i * split_size * 60)),  # timedeltaを秒数の文字列に変換します。
+                        'end': str(item['end']+(i * split_size * 60)),  # timedeltaを秒数の文字列に変換します。
+                        'content': item['text']
+                        }
+                        for item in transcript.segments
+                ])
         
             st.session_state.whisper_data = filtered_data
             st.session_state.shoq_hightlight_button = True
+            st.dataframe(pd.DataFrame(filtered_data))
 
         # 文字起こしされた字幕をハイライト分析
         if st.session_state.shoq_hightlight_button: 
@@ -96,19 +156,22 @@ def main():
                 with st.spinner("ハイライト分析中です..."):
                     initial_prompt = (
                         f"あなたはスポーツの観戦中継から重要なシーンを字幕から判別することができます。今回の字幕データはサッカーの試合の字幕です。あなたがハイライトだと思ったシーンはhighlight!、そうでなかったらnotと答えてください。字幕は断片的に流れてきます。過去の結果を元に判断しても良いです。ハイライトと判定できなかったら一律でnotと答えて大丈夫です。' ")
-                    messages = [{"role": "system", "content": initial_prompt}]
+                    # messages = [{"role": "system", "content": initial_prompt}]
                     h = []
-                    for message in st.session_state.whisper_data:
+                    for message in tqdm.tqdm(st.session_state.whisper_data):
                         
-                        messages.append({"role": "user", "content": message['content']})
+                        # messages.append({"role": "user", "content": message['content']})
 
                         res = client.chat.completions.create(
-                            model="gpt-3.5-turbo", messages=messages
+                            model="gpt-3.5-turbo", messages=[
+                                {"role": "system", "content": initial_prompt},
+                                {"role": "user", "content": f"start:{message['start']}, end:{message['end']}, message:{message['content']}"}
+                            ]
                         )
 
-                        messages.append(
-                            {"role": "assistant", "content": res.choices[0].message.content}
-                        )
+                        # messages.append(
+                        #     {"role": "assistant", "content": res.choices[0].message.content}
+                        # )
 
                         h.append({
                             'start' : message['start'],
