@@ -11,6 +11,7 @@ import datetime
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
 import shutil
+import tqdm
 
 import sidemenu as side
 
@@ -151,19 +152,22 @@ def main():
                 with st.spinner("ハイライト分析中です..."):
                     initial_prompt = (
                         f"あなたはスポーツの観戦中継から重要なシーンを字幕から判別することができます。今回の字幕データはサッカーの試合の字幕です。あなたがハイライトだと思ったシーンはhighlight!、そうでなかったらnotと答えてください。字幕は断片的に流れてきます。過去の結果を元に判断しても良いです。ハイライトと判定できなかったら一律でnotと答えて大丈夫です。' ")
-                    messages = [{"role": "system", "content": initial_prompt}]
+                    # messages = [{"role": "system", "content": initial_prompt}]
                     h = []
-                    for message in st.session_state.whisper_data:
+                    for message in tqdm.tqdm(st.session_state.whisper_data):
                         
-                        messages.append({"role": "user", "content": message['content']})
+                        # messages.append({"role": "user", "content": message['content']})
 
                         res = client.chat.completions.create(
-                            model="gpt-3.5-turbo", messages=messages
+                            model="gpt-3.5-turbo", messages=[
+                                {"role": "system", "content": initial_prompt},
+                                {"role": "user", "content": f"start:{message['start']}, end:{message['end']}, message:{message['content']}"}
+                            ]
                         )
 
-                        messages.append(
-                            {"role": "assistant", "content": res.choices[0].message.content}
-                        )
+                        # messages.append(
+                        #     {"role": "assistant", "content": res.choices[0].message.content}
+                        # )
 
                         h.append({
                             'start' : message['start'],
