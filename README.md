@@ -1,4 +1,4 @@
-# Hiright
+# Highlight
 
 
 使いかた
