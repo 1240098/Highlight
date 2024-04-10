@@ -5,7 +5,7 @@
 OpenAIのAPIキーが必要です。
 有料なため、各自設定してください。
 
-.env　ファイルを書き形式でプロジェクト配下におく
+.env　ファイルを下記形式でプロジェクト配下におく
 ```
 OPENAI_API_KEY={{your open AI api key}}
 ```
